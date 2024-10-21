@@ -9,9 +9,10 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Product } from './entities/product.entity';
-import { DeleteResult, Repository } from 'typeorm';
+import { DataSource, DeleteResult, Repository } from 'typeorm';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { validate as isUUID } from 'uuid';
+import { ProductImage } from './entities';
 
 @Injectable()
 export class ProductsService {
@@ -20,11 +21,21 @@ export class ProductsService {
   constructor(
     @InjectRepository(Product)
     private readonly productEntityService: Repository<Product>,
+    @InjectRepository(ProductImage)
+    private readonly productImageEntityService: Repository<ProductImage>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async create(createProductDto: CreateProductDto): Promise<Product> {
     try {
-      const product = this.productEntityService.create(createProductDto);
+      const { images = [], ...productDetails } = createProductDto;
+
+      const product = this.productEntityService.create({
+        ...productDetails,
+        images: images.map((image) =>
+          this.productImageEntityService.create({ url: image }),
+        ),
+      });
       await this.productEntityService.save(product);
 
       return product;
@@ -33,15 +44,21 @@ export class ProductsService {
     }
   }
 
-  async findAll(paginationDto: PaginationDto): Promise<Product[]> {
+  async findAll(paginationDto: PaginationDto) {
     const { limit = 10, offset = 0 } = paginationDto;
 
-    const products = this.productEntityService.find({
+    const products = await this.productEntityService.find({
       take: limit,
       skip: offset,
+      relations: {
+        images: true,
+      },
     });
 
-    return products;
+    return products.map((product) => ({
+      ...product,
+      images: product.images.map((image) => image.url),
+    }));
   }
 
   async findOne(param: string): Promise<Product> {
@@ -57,6 +74,7 @@ export class ProductsService {
           title: param,
           slug: param,
         })
+        .leftJoinAndSelect('product.images', 'image')
         .getOne();
     }
 
@@ -67,26 +85,50 @@ export class ProductsService {
     return product;
   }
 
-  async update(
-    id: string,
-    updateProductDto: UpdateProductDto,
-  ): Promise<Product> {
-    await this.findOne(id);
+  async findOnePlain(term: string) {
+    const { images = [], ...rest } = await this.findOne(term);
+    return {
+      ...rest,
+      images: images.map((image) => image.url),
+    };
+  }
+
+  async update(id: string, updateProductDto: UpdateProductDto) {
+    const { images, ...toUpdate } = updateProductDto;
 
     const product = await this.productEntityService.preload({
       id,
-      ...updateProductDto,
+      ...toUpdate,
     });
 
     if (!product) {
       throw new NotFoundException(`Product with id ${id} not found`);
     }
 
-    try {
-      await this.productEntityService.save(product);
+    // Create query runner
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-      return product;
+    try {
+      if (images) {
+        await queryRunner.manager.delete(ProductImage, { product: { id } });
+        product.images = images.map((image) =>
+          this.productImageEntityService.create({ url: image }),
+        );
+      } else {
+      }
+
+      // await this.productEntityService.save(product);
+      await queryRunner.manager.save(product);
+      await queryRunner.commitTransaction();
+      await queryRunner.release();
+
+      return this.findOnePlain(id);
     } catch (error) {
+      await queryRunner.rollbackTransaction();
+      await queryRunner.release();
+
       this.handleDbExceptions(error);
     }
   }
@@ -106,5 +148,15 @@ export class ProductsService {
     );
 
     this.logger.error(error.message);
+  }
+
+  async deleteAllProducts() {
+    const query = this.productEntityService.createQueryBuilder('product');
+
+    try {
+      return query.delete().where({}).execute();
+    } catch (error) {
+      this.handleDbExceptions(error);
+    }
   }
 }

@@ -34,7 +34,7 @@ export class ProductsController {
 
   @Get(':param')
   findOne(@Param('param') param: string) {
-    return this.productsService.findOne(param);
+    return this.productsService.findOnePlain(param);
   }
 
   @Patch(':id')
