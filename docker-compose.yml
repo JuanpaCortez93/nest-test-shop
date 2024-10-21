@@ -1,0 +1,13 @@
+services:
+  db:
+    image: postgres:14.3
+    restart: always
+    ports:
+      - '5435:5432'
+    environment:
+      - POSTGRES_DB=${DB_NAME}
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    container_name: test_db
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
